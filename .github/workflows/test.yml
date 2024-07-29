@@ -1,67 +1,35 @@
-name: Java Agent Main Build
+name: Nightly Snapshot Build
 on:
   push:
-    branches:
-      - main
-      - "release/v*"
+
 env:
   AWS_DEFAULT_REGION: us-east-1
-  STAGING_ECR_REGISTRY: 611364707713.dkr.ecr.us-west-2.amazonaws.com
-  STAGING_ECR_REPOSITORY: adot-autoinstrumentation-java-operator-staging
-
-concurrency:
-  group: java-agent-main-build
-  cancel-in-progress: false
+  IMAGE_REGISTRY: 611364707713.dkr.ecr.us-west-2.amazonaws.com
+  IMAGE_NAME: adot-autoinstrumentation-java-nightly
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  testpatch:
-    name: Test patches applied to dependencies
-    runs-on: aws-otel-java-instrumentation_ubuntu-latest_32-core
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: temurin
-      # vaadin 14 tests fail with node 18
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 16
-
-      # vaadin tests use pnpm
-      - name: Cache pnpm modules
-        uses: actions/cache@v3
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-test-cache-pnpm-modules
-      - uses: gradle/wrapper-validation-action@v1
-      - uses: ./.github/actions/patch-dependencies
-        with:
-          run_tests: "true"
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg_password: ${{ secrets.GPG_PASSPHRASE }}
-
   build:
     runs-on: ubuntu-latest
     outputs:
-      java_agent_tag: ${{ steps.java_agent_versioning.outputs.STAGING_TAG}}
-      staging-image: ${{ steps.imageOutput.outputs.stagingImage }}
-      staging_registry: ${{ steps.imageOutput.outputs.stagingRegistry }}
-      staging_repository: ${{ steps.imageOutput.outputs.stagingRepository }}
+      time_stamp_tag: ${{ steps.generate_time_stamp.outputs.nowTimeTag}}
+      release-candidate-image: ${{ steps.imageOutput.outputs.rcImage }}
+      image_registry: ${{ steps.imageOutput.outputs.imageRegistry }}
+      image_name: ${{ steps.imageOutput.outputs.imageName }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-java@v4
         with:
           java-version: 17
-          distribution: temurin
-
+          distribution: 'temurin'
+          
       # cache local patch outputs
       - name: Cache local Maven repository
         uses: actions/cache@v3
@@ -102,28 +70,25 @@ jobs:
       - name: Get current version
         id: getADOTJavaVersion
         shell: bash
-        run: echo "adot_java_version=$(./gradlew printVersion -q )" >> $GITHUB_OUTPUT
+        run: echo "adot_java_version=$(./gradlew printVersion -q -PtestUpstreamSnapshots=true )" >> $GITHUB_OUTPUT
 
-      - name: Get ADOT_JAVA_AGENT Image Tag
-        id: java_agent_versioning
-        run: |
-          shortsha="$(git rev-parse --short HEAD)"
-          java_agent_tag=${{ steps.getADOTJavaVersion.outputs.adot_java_version }}-$shortsha
-          echo "STAGING_TAG=$java_agent_tag" >> $GITHUB_OUTPUT
+      - name: Generate timestamp for image tag
+        id: generate_time_stamp
+        run: echo "nowTimeTag=$(date +'%Y-%m-%dT%H-%M-%S')" >> $GITHUB_OUTPUT
 
       - name: Set image to output
         id: imageOutput
         run: |
-          echo "stagingRegistry=${{ env.STAGING_ECR_REGISTRY }}" >> $GITHUB_OUTPUT
-          echo "stagingRepository=${{ env.STAGING_ECR_REPOSITORY }}" >> $GITHUB_OUTPUT
-          echo "stagingImage=${{ env.STAGING_ECR_REGISTRY }}/${{ env.STAGING_ECR_REPOSITORY }}:${{ steps.java_agent_versioning.outputs.STAGING_TAG }}" >> $GITHUB_OUTPUT
+          echo "imageRegistry=${{ env.IMAGE_REGISTRY }}" >> $GITHUB_OUTPUT
+          echo "imageName=${{ env.IMAGE_NAME }}" >> $GITHUB_OUTPUT
+          echo "rcImage=${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.generate_time_stamp.outputs.nowTimeTag }}" >> $GITHUB_OUTPUT
 
       - name: Build and Push Java Agent Image and Execute cpUtility Tests
         uses: ./.github/actions/cpUtility-testing
         with:
           aws-region: us-west-2
-          image_uri_with_tag: ${{ steps.imageOutput.outputs.stagingImage }}
-          image_registry: ${{ steps.imageOutput.outputs.stagingRegistry }}
+          image_uri_with_tag: ${{ steps.imageOutput.outputs.rcImage }}
+          image_registry: ${{ steps.imageOutput.outputs.imageRegistry }}
           adot-java-version: ${{ steps.getADOTJavaVersion.outputs.adot_java_version }}
           snapshot-ecr-role: ${{ secrets.JAVA_INSTRUMENTATION_SNAPSHOT_ECR }}
 
@@ -169,7 +134,7 @@ jobs:
       image_tag: ${{ needs.build.outputs.java_agent_tag }}
       image_uri: ${{ needs.build.outputs.staging_registry }}/${{ needs.build.outputs.staging_repository }}
       test_ref: ${{ needs.create-test-ref.outputs.testRef }}
-      caller-workflow-name: 'main-build'
+      caller-workflow-name: 'nightly-upstream-snapshot-build'
 
   # E2E tests where SampleApp has Java Agent
   e2e-test:
@@ -196,6 +161,7 @@ jobs:
       - uses: gradle/wrapper-validation-action@v1
 
       - name: Configure AWS Credentials
+        
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ASSUME_ROLE_ARN }}
@@ -223,12 +189,16 @@ jobs:
         with:
           arguments: contractTests -PlocalDocker=true
 
+  # AppSignals specific e2e tests
   application-signals-e2e-test:
+    concurrency:
+      group: e2e-adot-test
+      cancel-in-progress: false
     needs: [build]
     uses: ./.github/workflows/application-signals-e2e-test.yml
     secrets: inherit
     with:
-      adot-image-name: ${{ needs.build.outputs.staging-image }}
+      adot-image-name: ${{ needs.build.outputs.release-candidate-image }}
 
   publish-build-status:
     needs: [ build, contract-tests ]
@@ -238,7 +208,7 @@ jobs:
       namespace: 'ADOT/GitHubActions'
       repository: ${{ github.repository }}
       branch: ${{ github.ref_name }}
-      workflow: main-build
+      workflow: nightly-upstream-snapshot-build
       success: ${{  needs.build.result == 'success' &&
                     needs.contract-tests.result == 'success'  }}
       region: us-west-2
