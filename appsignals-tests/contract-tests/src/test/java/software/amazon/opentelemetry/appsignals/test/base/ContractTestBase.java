@@ -161,5 +161,7 @@ public abstract class ContractTestBase {
     return "service.name=" + getApplicationOtelServiceName();
   }
 
-  protected String isRuntimeEnabled() { return "false"; }
+  protected String isRuntimeEnabled() {
+    return "false";
+  }
 }
