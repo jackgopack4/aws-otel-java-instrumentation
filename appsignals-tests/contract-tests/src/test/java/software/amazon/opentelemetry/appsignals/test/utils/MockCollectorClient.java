@@ -132,6 +132,13 @@ public class MockCollectorClient {
                     .map(x -> new ResourceScopeSpan(ss.getFirst(), ss.getSecond(), x)))
         .collect(toImmutableList());
   }
+  public List<ResourceScopeMetric> getRuntimeMetrics(Set<String> presentMetrics) {
+    return fetchMetrics(presentMetrics, true);
+  }
+
+  public List<ResourceScopeMetric> getMetrics(Set<String> presentMetrics) {
+    return fetchMetrics(presentMetrics, false);
+  }
 
   /**
    * Get all metrics that are currently stored in the mock collector.
@@ -139,32 +146,31 @@ public class MockCollectorClient {
    * @return List of `ResourceScopeMetric` which is a flat list containing all metrics and their
    *     related scope and resources.
    */
-  public List<ResourceScopeMetric> getMetrics(Set<String> presentMetrics) {
+  private List<ResourceScopeMetric> fetchMetrics(Set<String> presentMetrics, boolean isRuntime) {
     List<ExportMetricsServiceRequest> exportedMetrics =
-        waitForContent(
-            "/get-metrics",
-            EXPORT_METRICS_SERVICE_REQUEST_LIST,
-            (exported, current) -> {
-              Set<String> receivedMetrics =
-                  current.stream()
-                      .flatMap(x -> x.getResourceMetricsList().stream())
-                      .flatMap(x -> x.getScopeMetricsList().stream())
-                      .flatMap(x -> x.getMetricsList().stream())
-                      .map(x -> x.getName())
-                      .collect(Collectors.toSet());
+            waitForContent(
+                    "/get-metrics",
+                    EXPORT_METRICS_SERVICE_REQUEST_LIST,
+                    (exported, current) -> {
+                      Set<String> receivedMetrics =
+                              current.stream()
+                                      .flatMap(x -> x.getResourceMetricsList().stream())
+                                      .flatMap(x -> x.getScopeMetricsList().stream())
+                                      .flatMap(x -> x.getMetricsList().stream())
+                                      .map(x -> x.getName())
+                                      .collect(Collectors.toSet());
 
-              return (!exported.isEmpty() && current.size() == exported.size())
-                  && receivedMetrics.containsAll(presentMetrics);
-            });
+                      return (isRuntime ? !exported.isEmpty() && receivedMetrics.size() == presentMetrics.size() : !exported.isEmpty() && current.size() == exported.size())
+                              && receivedMetrics.containsAll(presentMetrics);
+                    });
 
     return exportedMetrics.stream()
-        .flatMap(req -> req.getResourceMetricsList().stream())
-        .flatMap(rm -> rm.getScopeMetricsList().stream().map(x -> new Pair<>(rm, x)))
-        .flatMap(
-            sm ->
-                sm.getSecond().getMetricsList().stream()
-                    .map(x -> new ResourceScopeMetric(sm.getFirst(), sm.getSecond(), x)))
-        .collect(toImmutableList());
+            .flatMap(req -> req.getResourceMetricsList().stream())
+            .flatMap(rm -> rm.getScopeMetricsList().stream().map(x -> new Pair<>(rm, x)))
+            .flatMap(sm ->
+                    sm.getSecond().getMetricsList().stream()
+                            .map(x -> new ResourceScopeMetric(sm.getFirst(), sm.getSecond(), x)))
+            .collect(toImmutableList());
   }
 
   private <T> List<T> waitForContent(String url, TypeReference<List<T>> t) {
